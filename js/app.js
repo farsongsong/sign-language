@@ -1,20 +1,20 @@
 /**
  * app.js
- * 수화 번역기 메인 로직
- * 웹캠 → MediaPipe Hands → TensorFlow.js 모델 → 텍스트 출력
+ * 수화 번역기 — 가중치 직접 주입 방식 (TF.js 모델 로드 없이)
+ * 웹캠 → MediaPipe Hands → 수동 신경망 추론 → 텍스트 출력
  */
 
-// ─── 전역 상태 ───────────────────────────────────────────────────
+// ─── 전역 상태 ────────────────────────────────────────────────────
+let weights = null;
+let labels = [];
 let recognizedText = '';
 let lastSign = '';
 let lastSignTime = 0;
 let stableCount = 0;
-let tfjsModel = null;
-let labels = [];
 const STABLE_THRESHOLD = 20;
 const SIGN_COOLDOWN = 1200;
 
-// ─── DOM 요소 ────────────────────────────────────────────────────
+// ─── DOM ─────────────────────────────────────────────────────────
 const videoEl = document.getElementById('webcam');
 const canvasEl = document.getElementById('canvas');
 const ctx = canvasEl.getContext('2d');
@@ -23,70 +23,120 @@ const recognizedTextEl = document.getElementById('recognized-text');
 const statusEl = document.getElementById('status');
 const progressEl = document.getElementById('progress-bar');
 
+// ─── 수동 신경망 추론 ─────────────────────────────────────────────
+
+/** 행렬 곱셈: (1 x inDim) x (inDim x outDim) → (1 x outDim) */
+function matMul(input, kernel) {
+  const out = new Float32Array(kernel[0].length);
+  for (let j = 0; j < kernel[0].length; j++) {
+    let sum = 0;
+    for (let i = 0; i < input.length; i++) sum += input[i] * kernel[i][j];
+    out[j] = sum;
+  }
+  return out;
+}
+
+/** bias 더하기 */
+function addBias(x, bias) {
+  return x.map((v, i) => v + bias[i]);
+}
+
+/** ReLU */
+function relu(x) {
+  return x.map(v => Math.max(0, v));
+}
+
+/** Softmax */
+function softmax(x) {
+  const max = Math.max(...x);
+  const exp = x.map(v => Math.exp(v - max));
+  const sum = exp.reduce((a, b) => a + b, 0);
+  return exp.map(v => v / sum);
+}
+
+/** BatchNorm 추론 (gamma, beta, mean, variance) */
+function batchNorm(x, gamma, beta, mean, variance, epsilon = 0.001) {
+  return x.map((v, i) => {
+    const normalized = (v - mean[i]) / Math.sqrt(variance[i] + epsilon);
+    return gamma[i] * normalized + beta[i];
+  });
+}
+
+/** Dense 레이어 */
+function denseLayer(x, layerName, activation) {
+  const w = weights[layerName];
+  let out = matMul(x, w[0]);
+  out = addBias(out, w[1]);
+  if (activation === 'relu') return relu(out);
+  if (activation === 'softmax') return softmax(out);
+  return out;
+}
+
+/** BatchNorm 레이어 */
+function bnLayer(x, layerName) {
+  const w = weights[layerName];
+  // [gamma, beta, moving_mean, moving_variance]
+  return batchNorm(x, w[0], w[1], w[2], w[3]);
+}
+
 /**
- * TensorFlow.js 모델 로드
+ * 전체 모델 추론
+ * Dense(256,relu) → BN → Dense(128,relu) → BN → Dense(64,relu) → Dense(28,softmax)
  */
+function predict(input) {
+  let x = new Float32Array(input);
+  x = denseLayer(x, 'dense', 'relu');
+  x = bnLayer(x, 'batch_normalization');
+  x = denseLayer(x, 'dense_1', 'relu');
+  x = bnLayer(x, 'batch_normalization_1');
+  x = denseLayer(x, 'dense_2', 'relu');
+  x = denseLayer(x, 'dense_3', 'softmax');
+  return x;
+}
+
+// ─── 모델 로드 ────────────────────────────────────────────────────
 async function loadModel() {
   statusEl.textContent = '모델 로딩 중...';
   try {
-    // 라벨 로드
-    const labelsRes = await fetch('./model/labels.json');
-    labels = await labelsRes.json();
-
-    // 모델 로드
-    tfjsModel = await tf.loadLayersModel('./model/model.json');
-    statusEl.textContent = `모델 로드 완료 (${labels.length}개 지문자)`;
+    const [wRes, lRes] = await Promise.all([
+      fetch('./model/weights.json'),
+      fetch('./model/labels.json'),
+    ]);
+    weights = await wRes.json();
+    labels = await lRes.json();
+    statusEl.textContent = `모델 로드 완료 — ${labels.length}개 지문자 인식 준비됨`;
     statusEl.classList.add('active');
-    console.log('✅ 모델 로드 완료, 라벨:', labels);
   } catch (e) {
     statusEl.textContent = '모델 로드 실패: ' + e.message;
     console.error(e);
   }
 }
 
-/**
- * 랜드마크 정규화 (학습 시와 동일한 방법)
- */
+// ─── 랜드마크 정규화 ──────────────────────────────────────────────
 function normalizeLandmarks(landmarks) {
-  // 손목 기준 상대 좌표
   const wrist = landmarks[0];
   let lm = landmarks.map(p => ({
     x: p.x - wrist.x,
     y: p.y - wrist.y,
     z: p.z - wrist.z,
   }));
-
-  // 중지 MCP(9번)까지 거리로 스케일 정규화
   const scale = Math.sqrt(lm[9].x**2 + lm[9].y**2 + lm[9].z**2) + 1e-8;
   lm = lm.map(p => ({ x: p.x/scale, y: p.y/scale, z: p.z/scale }));
-
-  // 63차원 벡터로 평탄화
   return lm.flatMap(p => [p.x, p.y, p.z]);
 }
 
-/**
- * TF.js 모델로 지문자 분류
- */
-async function classifyWithModel(landmarks) {
-  if (!tfjsModel || labels.length === 0) return '?';
+// ─── 분류 ────────────────────────────────────────────────────────
+function classifySign(landmarks) {
+  if (!weights || labels.length === 0) return '?';
   const input = normalizeLandmarks(landmarks);
-  const tensor = tf.tensor2d([input]);
-  const prediction = tfjsModel.predict(tensor);
-  const probs = await prediction.data();
-  tensor.dispose();
-  prediction.dispose();
-
+  const probs = predict(input);
   const maxIdx = probs.indexOf(Math.max(...probs));
   const confidence = probs[maxIdx];
-
-  // 신뢰도 60% 미만이면 불확실
   if (confidence < 0.6) return '?';
   return labels[maxIdx];
 }
 
-/**
- * 캔버스에 랜드마크 그리기
- */
+// ─── 캔버스 랜드마크 그리기 ───────────────────────────────────────
 function drawLandmarks(landmarks) {
   const connections = [
     [0,1],[1,2],[2,3],[3,4],
@@ -112,15 +162,13 @@ function drawLandmarks(landmarks) {
   });
 }
 
-/**
- * 텍스트 추가
- */
+// ─── 텍스트 처리 ─────────────────────────────────────────────────
 function addToText(sign) {
   const now = Date.now();
   if (sign === lastSign && now - lastSignTime < SIGN_COOLDOWN) return;
   if (sign === '?') return;
   recognizedText += sign;
-  recognizedTextEl.textContent = recognizedText || '인식된 글자가 여기에 표시됩니다';
+  recognizedTextEl.textContent = recognizedText;
   recognizedTextEl.classList.remove('placeholder');
   lastSign = sign;
   lastSignTime = now;
@@ -141,9 +189,7 @@ function addSpace() {
   recognizedTextEl.textContent = recognizedText;
 }
 
-/**
- * MediaPipe 초기화
- */
+// ─── MediaPipe 초기화 ─────────────────────────────────────────────
 function initMediaPipe() {
   const hands = new Hands({
     locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
@@ -155,7 +201,7 @@ function initMediaPipe() {
     minTrackingConfidence: 0.5,
   });
 
-  hands.onResults(async (results) => {
+  hands.onResults((results) => {
     ctx.save();
     ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
     ctx.translate(canvasEl.width, 0);
@@ -168,7 +214,7 @@ function initMediaPipe() {
       const mirrored = landmarks.map(lm => ({ ...lm, x: 1 - lm.x }));
       drawLandmarks(mirrored);
 
-      const sign = await classifyWithModel(mirrored);
+      const sign = classifySign(mirrored);
       currentSignEl.textContent = sign !== '?' ? sign : '—';
 
       if (sign !== '?' && sign === lastSign) {
@@ -181,11 +227,11 @@ function initMediaPipe() {
         }
       } else {
         stableCount = 1;
-        progressEl.style.width = '0%';
         lastSign = sign;
+        progressEl.style.width = '0%';
       }
 
-      statusEl.textContent = `손 감지됨 — 지문자를 보여주세요`;
+      statusEl.textContent = '손 감지됨 — 지문자를 보여주세요';
       statusEl.classList.add('active');
     } else {
       currentSignEl.textContent = '—';
@@ -202,11 +248,8 @@ function initMediaPipe() {
   camera.start();
 }
 
-/**
- * 앱 초기화
- */
+// ─── 앱 시작 ─────────────────────────────────────────────────────
 async function init() {
-  // 웹캠 시작
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
     videoEl.srcObject = stream;
@@ -214,13 +257,9 @@ async function init() {
     statusEl.textContent = '웹캠 오류: ' + e.message;
   }
 
-  // 모델 로드
   await loadModel();
-
-  // MediaPipe 초기화
   initMediaPipe();
 
-  // 버튼 이벤트
   document.getElementById('btn-reset').addEventListener('click', resetText);
   document.getElementById('btn-space').addEventListener('click', addSpace);
 }
