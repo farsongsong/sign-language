@@ -240,3 +240,10 @@ main {
   main { grid-template-columns: 1fr; }
   .guide-section { grid-column: 1; }
 }
+
+.btn-danger {
+  background: #FFF0F0;
+  color: #E53E3E;
+  border: 1.5px solid #FED7D7;
+}
+.btn-danger:hover { background: #FED7D7; }
