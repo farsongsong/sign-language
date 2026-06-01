@@ -1,18 +1,17 @@
 /**
  * app.js — 수화 번역기
  * TF.js 없이 순수 JS로 신경망 추론
- * 구조: Dense(256,relu) → BN → Dense(128,relu) → BN → Dense(64,relu) → Dense(28,softmax)
  */
 
 // ─── 상태 ─────────────────────────────────────────────────────────
-let W = null;          // 가중치
-let LABELS = [];       // 라벨
+let W = null;
+let LABELS = [];
 let outText = '';
 let prevSign = '';
-let prevTime = 0;
 let stableCount = 0;
-const STABLE = 20;
-const COOLDOWN = 1200;
+let justCommitted = false; // 방금 글자 확정했는지 여부
+
+const STABLE = 35;        // 높을수록 느려짐 (35프레임 ≈ 약 1.2초)
 
 // ─── DOM ──────────────────────────────────────────────────────────
 const video    = document.getElementById('webcam');
@@ -24,9 +23,7 @@ const elStatus = document.getElementById('status');
 const elBar    = document.getElementById('progress-bar');
 
 // ─── 순수 JS 신경망 ───────────────────────────────────────────────
-
 function dot(x, kernel, bias) {
-  // x: Float32Array (n,)  kernel: Array (n, m)  bias: Array (m,)
   const m = kernel[0].length;
   const out = new Float32Array(m);
   for (let j = 0; j < m; j++) {
@@ -47,35 +44,28 @@ function softmax(x) {
 }
 
 function batchNorm(x, gamma, beta, mean, variance) {
-  const eps = 0.001;
-  return x.map((v, i) => gamma[i] * (v - mean[i]) / Math.sqrt(variance[i] + eps) + beta[i]);
+  return x.map((v, i) =>
+    gamma[i] * (v - mean[i]) / Math.sqrt(variance[i] + 0.001) + beta[i]
+  );
 }
 
 function forward(input) {
   let x = new Float32Array(input);
-
-  // Dense 256 + relu
   x = relu(dot(x, W.dense[0], W.dense[1]));
-  // BatchNorm
   x = batchNorm(x, W.batch_normalization[0], W.batch_normalization[1],
                     W.batch_normalization[2], W.batch_normalization[3]);
-  // Dense 128 + relu
   x = relu(dot(x, W.dense_1[0], W.dense_1[1]));
-  // BatchNorm
   x = batchNorm(x, W.batch_normalization_1[0], W.batch_normalization_1[1],
                     W.batch_normalization_1[2], W.batch_normalization_1[3]);
-  // Dense 64 + relu
   x = relu(dot(x, W.dense_2[0], W.dense_2[1]));
-  // Dense 28 + softmax
   x = softmax(dot(x, W.dense_3[0], W.dense_3[1]));
-
   return x;
 }
 
 // ─── 랜드마크 정규화 ──────────────────────────────────────────────
 function normalize(lms) {
   const wx = lms[0].x, wy = lms[0].y, wz = lms[0].z;
-  let rel = lms.map(p => ({ x: p.x - wx, y: p.y - wy, z: p.z - wz }));
+  let rel = lms.map(p => ({ x: p.x-wx, y: p.y-wy, z: p.z-wz }));
   const scale = Math.sqrt(rel[9].x**2 + rel[9].y**2 + rel[9].z**2) + 1e-8;
   rel = rel.map(p => ({ x: p.x/scale, y: p.y/scale, z: p.z/scale }));
   return rel.flatMap(p => [p.x, p.y, p.z]);
@@ -86,10 +76,9 @@ function classify(lms) {
   if (!W || !LABELS.length) return '?';
   const probs = forward(normalize(lms));
   let maxIdx = 0;
-  for (let i = 1; i < probs.length; i++) {
+  for (let i = 1; i < probs.length; i++)
     if (probs[i] > probs[maxIdx]) maxIdx = i;
-  }
-  return probs[maxIdx] >= 0.6 ? LABELS[maxIdx] : '?';
+  return probs[maxIdx] >= 0.65 ? LABELS[maxIdx] : '?';
 }
 
 // ─── 캔버스 그리기 ────────────────────────────────────────────────
@@ -97,7 +86,7 @@ function draw(lms) {
   const C = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],
              [0,9],[9,10],[10,11],[11,12],[0,13],[13,14],[14,15],[15,16],
              [0,17],[17,18],[18,19],[19,20],[5,9],[9,13],[13,17]];
-  ctx.strokeStyle = '#00C2FF';
+  ctx.strokeStyle = '#4F6EF7';
   ctx.lineWidth = 2;
   C.forEach(([a,b]) => {
     ctx.beginPath();
@@ -107,21 +96,22 @@ function draw(lms) {
   });
   lms.forEach((p, i) => {
     ctx.beginPath();
-    ctx.arc(p.x * canvas.width, p.y * canvas.height, i === 0 ? 6 : 4, 0, Math.PI*2);
-    ctx.fillStyle = i === 0 ? '#FF6B6B' : '#00C2FF';
+    ctx.arc(p.x*canvas.width, p.y*canvas.height, i===0?7:4, 0, Math.PI*2);
+    ctx.fillStyle = i===0 ? '#00BFA5' : '#4F6EF7';
     ctx.fill();
   });
 }
 
 // ─── 텍스트 ───────────────────────────────────────────────────────
-function append(sign) {
-  const now = Date.now();
-  if (sign === prevSign && now - prevTime < COOLDOWN) return;
-  if (sign === '?') return;
+function commit(sign) {
   outText += sign;
   elText.textContent = outText;
   elText.classList.remove('placeholder');
-  prevSign = sign; prevTime = now;
+  // 확정 직후 카운트 리셋 + 다음 글자 대기 상태로
+  stableCount = 0;
+  prevSign = '';      // 바로 다른 글자 인식 가능하게
+  justCommitted = true;
+  setTimeout(() => { justCommitted = false; }, 300); // 0.3초 짧은 딜레이만
 }
 
 function reset() {
@@ -134,7 +124,7 @@ function reset() {
 
 function space() {
   outText += ' ';
-  elText.textContent = outText;
+  elText.textContent = outText || '인식된 글자가 여기에 표시됩니다';
 }
 
 // ─── MediaPipe ────────────────────────────────────────────────────
@@ -162,17 +152,35 @@ function initMP() {
       const sign = classify(lms);
       elSign.textContent = sign !== '?' ? sign : '—';
 
-      if (sign !== '?' && sign === prevSign) {
-        stableCount++;
-        elBar.style.width = `${(stableCount / STABLE) * 100}%`;
-        if (stableCount >= STABLE) { append(sign); stableCount = 0; elBar.style.width = '0%'; }
+      if (justCommitted) {
+        // 확정 직후 짧은 무시 구간
+        elBar.style.width = '0%';
+      } else if (sign !== '?') {
+        if (sign === prevSign) {
+          stableCount++;
+          elBar.style.width = `${(stableCount / STABLE) * 100}%`;
+          if (stableCount >= STABLE) {
+            commit(sign);
+            elBar.style.width = '0%';
+          }
+        } else {
+          // 다른 글자로 바뀌면 카운트 리셋
+          stableCount = 1;
+          prevSign = sign;
+          elBar.style.width = '0%';
+        }
       } else {
-        stableCount = 1; prevSign = sign; elBar.style.width = '0%';
+        stableCount = 0;
+        prevSign = '';
+        elBar.style.width = '0%';
       }
+
       elStatus.textContent = '손 감지됨 — 지문자를 보여주세요';
       elStatus.classList.add('active');
     } else {
-      elSign.textContent = '—'; stableCount = 0; elBar.style.width = '0%';
+      elSign.textContent = '—';
+      stableCount = 0; prevSign = '';
+      elBar.style.width = '0%';
       elStatus.textContent = '손을 카메라에 보여주세요';
       elStatus.classList.remove('active');
     }
@@ -187,14 +195,12 @@ function initMP() {
 
 // ─── 초기화 ───────────────────────────────────────────────────────
 async function init() {
-  // 웹캠
   try {
     video.srcObject = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
   } catch (e) {
     elStatus.textContent = '웹캠 오류: ' + e.message; return;
   }
 
-  // 가중치 + 라벨 로드
   elStatus.textContent = '모델 로딩 중...';
   try {
     const [wRes, lRes] = await Promise.all([
@@ -210,7 +216,6 @@ async function init() {
   }
 
   initMP();
-
   document.getElementById('btn-reset').addEventListener('click', reset);
   document.getElementById('btn-space').addEventListener('click', space);
 }
