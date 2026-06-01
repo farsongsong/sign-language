@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>수화 번역기</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700;900&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <div class="logo-icon">🤟</div>
+      <h1>수화 <span>번역기</span></h1>
+    </div>
+    <a href="https://automate-subtitles.vercel.app/" class="back-link">← 자막 자동화로 돌아가기</a>
+  </header>
+
+  <main>
+    <div class="card">
+      <p class="card-title">📷 웹캠 인식</p>
+      <div class="webcam-wrapper">
+        <video id="webcam" autoplay playsinline></video>
+        <canvas id="canvas" width="640" height="480"></canvas>
+      </div>
+      <div class="status-bar" id="status">
+        <div class="status-dot"></div>
+        모델 로딩 중...
+      </div>
+    </div>
+
+    <div class="card result-section">
+      <p class="card-title">✍️ 인식 결과</p>
+      <div class="current-sign-box">
+        <div class="current-sign-label">현재 인식 중인 지문자</div>
+        <div id="current-sign">—</div>
+        <div class="progress-wrapper">
+          <div class="progress-label">글자 확정 진행도</div>
+          <div class="progress-track">
+            <div id="progress-bar"></div>
+          </div>
+        </div>
+      </div>
+      <div class="text-output-box">
+        <div id="recognized-text" class="placeholder">인식된 글자가 여기에 표시됩니다</div>
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-primary" id="btn-space">공백 추가</button>
+        <button class="btn btn-secondary" id="btn-reset">초기화</button>
+      </div>
+    </div>
+
+    <div class="card guide-section">
+      <p class="card-title">📖 한국 지문자 가이드</p>
+      <div class="guide-grid">
+        <div class="guide-item"><div class="guide-sign">ㄱ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㄴ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㄷ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㄹ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅁ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅂ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅅ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅇ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅈ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅊ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅋ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅌ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅍ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅎ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅏ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅐ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅑ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅓ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅔ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅕ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅗ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅚ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅛ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅜ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅟ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅠ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅡ</div></div>
+        <div class="guide-item"><div class="guide-sign">ㅣ</div></div>
+      </div>
+    </div>
+  </main>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
